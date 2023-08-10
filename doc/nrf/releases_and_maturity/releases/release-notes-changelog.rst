@@ -585,6 +585,7 @@ Libraries for networking
 
     * Support for a single ``url`` field in job documents.
       Previously the host name and path of the download URL could only be specified separately.
+    * The protocol (HTTP or HTTPS) is now automatically chosen based on the `protocol` or `url` fields in the download job document.
 
   * Updated:
 
