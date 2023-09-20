@@ -1,11 +1,14 @@
 #include <nrfx_twis.h>
 #include <nrfx_twim.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/pm/device.h>
 #include <zephyr/irq.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/gpio.h>
+
+#include <drivers/virtual_eeprom.h>
 
 LOG_MODULE_REGISTER(virtual_eeprom, CONFIG_I2C_VIRTUAL_EEPROM_DRIVER_LOG_LEVEL);
 
@@ -33,39 +36,121 @@ struct virtual_eeprom_dev_cfg {
 
 struct virtual_eeprom_dev_data {
         enum virtual_eeprom_state state;
-        uint8_t address;
+        struct k_mutex lock;
+        virtual_eeprom_evt_handler_t evt_handler;
+        uint16_t address;
         uint8_t* buf_scratch;
         uint8_t* buf_data;
 };
+
+int virtual_eeprom_write(const struct device *dev, uint16_t address, uint8_t *src, uint16_t len) {
+
+        if (dev == NULL || src == NULL) {
+                LOG_ERR("Null pointer provided");
+                return -EINVAL;
+        }
+
+        const struct virtual_eeprom_dev_cfg *cfg = dev->config;
+        struct virtual_eeprom_dev_data *data = dev->data;
+
+        if (address + len >= cfg->buf_data_size) {
+                LOG_ERR("Data out of bounds");
+                return -EFAULT;
+        }
+
+        k_mutex_lock(&data->lock, K_FOREVER);
+        memcpy(&data->buf_data[address], src, len);
+        k_mutex_unlock(&data->lock);
+
+        return 0;
+}
+
+int virtual_eeprom_read(const struct device *dev, uint16_t address, uint8_t *dest, uint16_t len) {
+
+        if (dev == NULL || dest == NULL) {
+                LOG_ERR("Null pointer provided");
+                return -EINVAL;
+        }
+
+        const struct virtual_eeprom_dev_cfg *cfg = dev->config;
+        struct virtual_eeprom_dev_data *data = dev->data;
+
+        if (address + len >= cfg->buf_data_size) {
+                LOG_ERR("Data out of bounds");
+                return -EFAULT;
+        }
+
+        k_mutex_lock(&data->lock, K_FOREVER);
+        memcpy(dest, &data->buf_data[address], len);
+        k_mutex_unlock(&data->lock);
+
+        return 0;
+}
+
+void virtual_eeprom_set_evt_handler(const struct device *dev, 
+                                    virtual_eeprom_evt_handler_t handler) {
+        struct virtual_eeprom_dev_data *data = dev->data;
+        data->evt_handler = handler;
+}
 
 static void twis_handler(const struct device *dev, nrfx_twis_evt_t const *p_event) {
         nrfx_err_t status;
         (void)status;
 
-        struct virtual_eeprom_dev_cfg *cfg = dev->config;
+        const struct virtual_eeprom_dev_cfg *cfg = dev->config;
         struct virtual_eeprom_dev_data *data = dev->data;
 
         switch (p_event->type)
         {
         case NRFX_TWIS_EVT_WRITE_DONE:
                 size_t write_len = p_event->data.rx_amount;
+                size_t addr_len = sizeof(data->address);
 
-                // First byte written is always the address
-                data->address = data->buf_scratch[0];
+                // First 2 bytes written is always the address
+                uint16_t new_address = *((uint16_t*)data->buf_scratch);
+
+                if (new_address >= cfg->buf_data_size) {
+                        LOG_ERR("Address %x exceeds size %x", new_address, cfg->buf_data_size);
+                        break;
+                }
+
+                data->address = new_address;
                 LOG_DBG("Set address to %x", data->address);
 
                 // Anything else is supposed to be written to that address
-                if(write_len > 1) {
-                        size_t data_len = MIN(write_len - 1, 
+                if (write_len > addr_len) {
+
+                        // Determine maximum copy length and drop remaining bytes
+                        size_t data_len = MIN(write_len - addr_len, 
                                               cfg->buf_data_size - data->address);
-                        memcpy(&data->buf_data[data->address], &data->buf_scratch[1], data_len);
+
+                        k_mutex_lock(&data->lock, K_FOREVER);
+                        memcpy(&data->buf_data[data->address], 
+                               &data->buf_scratch[addr_len], 
+                               data_len);
+                        k_mutex_unlock(&data->lock);
+
                         LOG_DBG("Written %d bytes @ %x", data_len, data->address);
+
+                        // Call external event handler if present
+                        if (data->evt_handler != NULL) {
+                                data->evt_handler(VIRTUAL_EEPROM_WRITE, data->address, data_len);
+                        }
+
                         data->address += data_len; 
                 }
                 break;
 
         case NRFX_TWIS_EVT_READ_DONE:
                 LOG_DBG("Read %d bytes @ %x", p_event->data.tx_amount, data->address);
+
+                // Call external event handler if present
+                if (data->evt_handler != NULL) {
+                        data->evt_handler(VIRTUAL_EEPROM_READ, 
+                                          data->address, 
+                                          p_event->data.tx_amount);
+                }
+
                 data->address += p_event->data.tx_amount;
                 data->state = STATE_IDLE;
                 break;
@@ -78,20 +163,24 @@ static void twis_handler(const struct device *dev, nrfx_twis_evt_t const *p_even
 
         case NRFX_TWIS_EVT_READ_REQ:
                 size_t max_read_len = cfg->buf_scratch_size - data->address;
-                status = nrfx_twis_tx_prepare(&cfg->twis, 
-                                              &data->buf_data[data->address], max_read_len);
+
+                k_mutex_lock(&data->lock, K_FOREVER);
+                memcpy(data->buf_scratch, &data->buf_data[data->address], max_read_len);
+                k_mutex_unlock(&data->lock);
+
+                status = nrfx_twis_tx_prepare(&cfg->twis, data->buf_scratch, max_read_len);
                 break;
         case NRFX_TWIS_EVT_READ_ERROR:
-                LOG_ERR("--> Slave event: read error");
+                LOG_ERR("Read error");
                 break;
         case NRFX_TWIS_EVT_WRITE_ERROR:
-                LOG_ERR("--> Slave event: write error");
+                LOG_ERR("Write error");
                 break;
         case NRFX_TWIS_EVT_GENERAL_ERROR:
-                LOG_ERR("--> Slave event: general error");
+                LOG_ERR("General error");
                 break;
         default:
-                LOG_DBG("--> SLAVE event: %d.", p_event->type);
+                LOG_DBG("Event: %d.", p_event->type);
         }
 }
 
@@ -100,11 +189,14 @@ static int virtual_eeprom_init(const struct device *dev) {
         LOG_DBG("Initializing eeprom slave. Device %p", dev);
 
 	const struct virtual_eeprom_dev_cfg *cfg = dev->config;
+	struct virtual_eeprom_dev_data *data = dev->data;
 
         cfg->irq_connect();
 
+        k_mutex_init(&data->lock);
+
         nrfx_twis_config_t twis_config = {
-                .addr = cfg->address,
+                .addr = { cfg->address },
                 .scl_pin = GPIO_PIN_MAP(cfg->scl_gpio_port, cfg->scl_gpio.pin),
                 .sda_pin = GPIO_PIN_MAP(cfg->sda_gpio_port, cfg->sda_gpio.pin),
                 .skip_gpio_cfg = false,
@@ -114,9 +206,10 @@ static int virtual_eeprom_init(const struct device *dev) {
         err = nrfx_twis_init(&cfg->twis, &twis_config, cfg->twis_handler);
         if (err != NRFX_SUCCESS) {
                 LOG_ERR("Error initializing TWIS: %d", err);
+                return -1;
         }
         nrfx_twis_enable(&cfg->twis);
-        return err;
+        return 0;
 }
 
 #define EEPROM_I2C_BUS_IDX(n)                                                   \
@@ -156,7 +249,8 @@ static int virtual_eeprom_init(const struct device *dev) {
                 .buf_data = virtual_eeprom_##n##_buf_data,                      \
                 .buf_scratch = virtual_eeprom_##n##_buf_scratch,                \
                 .state = STATE_IDLE,                                            \
-                .address = 0x0                                                  \
+                .address = 0x0,                                                 \
+                .evt_handler = NULL                                             \
         };                                                                      \
                                                                                 \
         DEVICE_DT_INST_DEFINE(n, virtual_eeprom_init, NULL,			\

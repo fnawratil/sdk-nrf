@@ -11,7 +11,7 @@
 		status = "okay";
 		size = <256>;
 		pagesize = <256>;
-		address-width = < 8 >;
+		address-width = < 16 >;
 		timeout = < 100 >;
 		reg = <0x7>;
 	};

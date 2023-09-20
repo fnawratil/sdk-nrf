@@ -10,7 +10,7 @@
 };
 
 / {
-	eeprom {
+	virtual_eeprom: eeprom {
 		compatible = "nordic,i2c-virtual-eeprom";
 		status = "okay";
 		i2c-bus-idx = <1>;
