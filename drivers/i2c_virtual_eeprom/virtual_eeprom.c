@@ -62,6 +62,8 @@ int virtual_eeprom_write(const struct device *dev, uint16_t address, uint8_t *sr
         memcpy(&data->buf_data[address], src, len);
         k_mutex_unlock(&data->lock);
 
+        LOG_DBG("Internally written %x bytes to %x", src[0], address);
+
         return 0;
 }
 
@@ -83,6 +85,7 @@ int virtual_eeprom_read(const struct device *dev, uint16_t address, uint8_t *des
         k_mutex_lock(&data->lock, K_FOREVER);
         memcpy(dest, &data->buf_data[address], len);
         k_mutex_unlock(&data->lock);
+
 
         return 0;
 }
