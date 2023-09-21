@@ -36,10 +36,13 @@ int main(void)
 	err = eeprom_read(eeprom, 0x0, &read_data, sizeof(read_data));
 	printk("EEPROM data %lx\n", read_data);
 
-	size_t write_data = 0xdeadbeef;
-	err = eeprom_write(eeprom, 0x0, &write_data, sizeof(write_data));
-	err = eeprom_read(eeprom, 0x0, &read_data, sizeof(read_data));
-	printk("EEPROM data %lx\n", read_data);
+	while(true) {
+		k_msleep(5000);
+		size_t write_data = 0xdeadbeef;
+		err = eeprom_write(eeprom, 0x0, &write_data, sizeof(write_data));
+		err = eeprom_read(eeprom, 0x0, &read_data, sizeof(read_data));
+		printk("EEPROM data %lx\n", read_data);
 
+	}
 	return 0;
 }

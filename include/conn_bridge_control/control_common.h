@@ -21,19 +21,23 @@ extern "C" {
 
 struct conn_bridge_ctrl_reg_definition {
         uint16_t address;
-        uint16_t size;
 };
 
-#define DEFINE_CONN_BRIDGE_CTRL_REG(address, name, type)                                        \
+#define DEFINE_CONN_BRIDGE_CTRL_REG(idx, name)                                                  \
 struct conn_bridge_ctrl_reg_definition conn_bridge_ctrl_reg_definition_##name = {               \
-        .address = address,                                                                     \
-        .size = sizeof(type)                                                                    \
+        .address = address * sizeof(uint32_t),                                                  \
 };                                                                                              \
 
-#define GEN_CONN_BRIDGE_CTRL_HOST_SETTER(name, type)                                            \
-void conn_bridge_ctrl_set_##name(##type input) {                                                \
-        virtual_eeprom_write(eeprom, )                                                          \
+#define GEN_CONN_BRIDGE_CTRL_HOST_GETSET(name)                                                  \
+void conn_bridge_ctrl_set_##name(uint32_t input) {                                              \
+        virtual_eeprom_write(eeprom, conn_bridge_ctrl_reg_definition_##name.address,            \
+                             &input, sizeof(input));                                            \
 }                                                                                               \
+void conn_bridge_ctrl_get_##name(uint32_t *output) {                                            \
+        virtual_eeprom_read(eeprom, conn_bridge_ctrl_reg_definition_##name.address,             \
+                             &output, sizeof(output));                                          \
+}                                                                                               \
+
 
 /**
  * @}

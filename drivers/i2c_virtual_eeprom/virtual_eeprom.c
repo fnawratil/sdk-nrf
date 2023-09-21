@@ -218,14 +218,18 @@ static int virtual_eeprom_init(const struct device *dev) {
 #define EEPROM_I2C_BUS_IDX(n)                                                   \
         DT_INST_PROP(n, i2c_bus_idx)
 
+#define EEPROM_I2C_NODE(n) \
+        DT_NODELABEL(i2c2)
+
 #define EEPROM_GPIOS_GET_PORT(n, gpios)						\
 	DT_PROP_OR(DT_PHANDLE(DT_DRV_INST(n), gpios), port, 0)
 
 #define EEPROM_DEVICE_DEFINE(n)                                                 \
         static void irq_connect_##n(void) {                                     \
-                IRQ_DIRECT_CONNECT(DT_IRQN(DT_NODELABEL(i2c1)),                 \
-                        DT_IRQ(DT_NODELABEL(i2c1), priority),                   \
-                        NRFX_TWIS_INST_HANDLER_GET(1), 0);                      \
+                IRQ_DIRECT_CONNECT(DT_IRQN(EEPROM_I2C_NODE(n)),                 \
+                        DT_IRQ(EEPROM_I2C_NODE(n), priority),                   \
+                        NRFX_TWIS_INST_HANDLER_GET(EEPROM_I2C_BUS_IDX(n)),      \
+                        0);                                                     \
         }                                                                       \
                                                                                 \
         static void twis_handler_forward_##n(nrfx_twis_evt_t const *p_event) {  \
